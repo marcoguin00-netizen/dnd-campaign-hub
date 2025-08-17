@@ -1,4 +1,6 @@
 import React, { useEffect, useMemo, useRef, useState } from "react";
+import CloudinaryImageField from "./CloudinaryImageField.jsx";
+
 
 // -------------------- Real-time client (WebSocket) --------------------
 class RT {
@@ -41,7 +43,31 @@ const loadData = () => {
 const saveData = (d) => localStorage.setItem("dndhub_data_v1", JSON.stringify(d));
 
 const fileToObjectUrl = async (file) => URL.createObjectURL(file);
+// ---- Cloudinary config & upload helper ----
+const CLD_NAME   = import.meta.env.VITE_CLD_NAME;            // es. "tuo-cloud"
+const CLD_PRESET = import.meta.env.VITE_CLD_UPLOAD_PRESET;   // es. "dndhub-unsigned"
 
+/**
+ * Carica un file su Cloudinary (preset UNSIGNED) e ritorna la secure_url.
+ * folder è opzionale (consiglio: dnd-hub/<codice-campagna>).
+ */
+async function uploadToCloudinary(file, folder = "dnd-hub") {
+  if (!CLD_NAME || !CLD_PRESET) {
+    throw new Error("Mancano VITE_CLD_NAME o VITE_CLD_UPLOAD_PRESET su Vercel.");
+  }
+  const kind = file.type?.startsWith("image/") ? "image" : "raw"; // immagini → image, altro → raw
+  const url  = `https://api.cloudinary.com/v1_1/${CLD_NAME}/${kind}/upload`;
+
+  const fd = new FormData();
+  fd.append("file", file);
+  fd.append("upload_preset", CLD_PRESET);
+  if (folder) fd.append("folder", folder);
+
+  const res  = await fetch(url, { method: "POST", body: fd });
+  const json = await res.json();
+  if (!res.ok) throw new Error(json.error?.message || "Upload fallito");
+  return json.secure_url;
+}
 // -------------------- UI atoms --------------------
 const Button = ({ as: As = "button", className = "", children, ...props }) => (
   <As className={`px-4 py-2 rounded-2xl shadow hover:shadow-md transition active:scale-[.99] disabled:opacity-50 disabled:cursor-not-allowed ${className}`} {...props}>{children}</As>
@@ -111,11 +137,44 @@ export default function App() {
 
   const setCampaign = (id) => setData((d) => ({ ...d, lastCampaignId: id }));
 
-  const createCampaign = async ({ name, imageFile }) => {
-    const id = uid();
-    const code = genCode();
-    const imageUrl = imageFile ? await fileToObjectUrl(imageFile) : "";
-    const campaign = { id, name, code, imageUrl, players: [], manuals: [], gallery: [], characters: [], sessions: [], soundEnabled: true, version: 1 };
+const createCampaign = async ({ name, imageFile }) => {
+  const id = uid();
+  const code = genCode();
+
+  // Carica su Cloudinary se c'è un file
+  const imageUrl = imageFile
+    ? await uploadToCloudinary(imageFile, `dnd-hub/${code}`)
+    : "";
+
+  // Oggetto campagna completo
+  const campaign = {
+    id,
+    name,
+    code,
+    imageUrl,
+    players: [],
+    manuals: [],
+    gallery: [],
+    characters: [],
+    sessions: [],
+    soundEnabled: true,
+    version: 1,
+  };
+
+  // Salva localmente e attiva la campagna
+  setData((d) => ({
+    ...d,
+    campaigns: [...d.campaigns, campaign],
+    lastCampaignId: id,
+  }));
+  setRole("DM");
+  setView("home");
+
+  // Annuncia lo snapshot via WebSocket
+  setTimeout(() => rtRef.current?.send("snapshot", campaign), 0);
+};
+
+
     setData((d) => ({ ...d, campaigns: [...d.campaigns, campaign], lastCampaignId: id }));
     setRole("DM");
     setView("home");
@@ -197,7 +256,14 @@ export default function App() {
         {activeCampaign && view !== "entry" && (
           <>
             <NavTabs view={view} setView={setView} />
-            {view === "home" && <HomeView role={role} campaign={activeCampaign} onReplaceImage={async (file) => { const url = await fileToObjectUrl(file); upsertCampaign({ imageUrl: url }); }} />}
+            {view === "home" && (
+  <HomeView
+    role={role}
+    campaign={activeCampaign}
+    onReplaceImage={(url) => upsertCampaign({ imageUrl: url })}
+  />
+)}
+
             {view === "manuals" && <ManualsView role={role} campaign={activeCampaign} updateCampaign={updateCampaign} />}
             {view === "pg" && <PGView role={role} campaign={activeCampaign} playerName={playerName} updateCampaign={updateCampaign} />}
             {view === "session" && <SessionView role={role} campaign={activeCampaign} updateCampaign={updateCampaign} />}
@@ -329,17 +395,26 @@ function HomeView({ role, campaign, onReplaceImage }) {
     <div className="grid grid-cols-1 md:grid-cols-3 gap-6">
       <Card className="md:col-span-2">
         <div className="flex items-start gap-4">
-          <img src={campaign.imageUrl || "https://picsum.photos/seed/dnd/600/300"} alt="cover" className="w-56 h-32 object-cover rounded-xl border" />
+          <img
+            src={campaign.imageUrl || "https://picsum.photos/seed/dnd/600/300"}
+            alt="cover"
+            className="w-56 h-32 object-cover rounded-xl border"
+          />
           <div className="flex-1">
             <h2 className="font-semibold text-xl mb-2">{campaign.name}</h2>
+
             {role === "DM" && (
               <div className="space-y-2">
-                <label className="text-sm block">Sostituisci immagine</label>
-                <input type="file" accept="image/*" onChange={(e) => e.target.files?.[0] && onReplaceImage(e.target.files[0])} />
+                <CloudinaryImageField
+                  label="Sostituisci immagine"
+                    folder={`dnd-hub/${campaign.code}`}
+                  onUploaded={(url) => onReplaceImage(url)}
+                />
               </div>
             )}
           </div>
         </div>
+
         <div className="grid grid-cols-1 md:grid-cols-2 gap-4 mt-4">
           <Card>
             <h3 className="font-semibold">Prossima sessione</h3>
@@ -348,8 +423,11 @@ function HomeView({ role, campaign, onReplaceImage }) {
                 <div><b>Data:</b> {new Date(nextSession.dateISO).toLocaleString()}</div>
                 <div className="opacity-70 mt-1">{nextSession.summary || "—"}</div>
               </div>
-            ) : (<p className="text-sm opacity-70 mt-2">Nessuna sessione pianificata.</p>)}
+            ) : (
+              <p className="text-sm opacity-70 mt-2">Nessuna sessione pianificata.</p>
+            )}
           </Card>
+
           <Card>
             <h3 className="font-semibold">Sessione precedente</h3>
             {lastSession ? (
@@ -357,7 +435,9 @@ function HomeView({ role, campaign, onReplaceImage }) {
                 <div><b>Data:</b> {new Date(lastSession.dateISO).toLocaleString()}</div>
                 <div className="opacity-70 mt-1">{lastSession.summary || "—"}</div>
               </div>
-            ) : (<p className="text-sm opacity-70 mt-2">Ancora nessuna sessione svolta.</p>)}
+            ) : (
+              <p className="text-sm opacity-70 mt-2">Ancora nessuna sessione svolta.</p>
+            )}
           </Card>
         </div>
       </Card>
@@ -369,15 +449,18 @@ function HomeView({ role, campaign, onReplaceImage }) {
           {campaign.players.map((p) => (
             <li key={p.id} className="flex items-center justify-between">
               <span>{p.name}</span>
-              {role === "DM" && <span className="text-xs opacity-60">ID: {p.id.slice(0,6)}</span>}
+              {role === "DM" && <span className="text-xs opacity-60">ID: {p.id.slice(0, 6)}</span>}
             </li>
           ))}
         </ul>
-        <div className="text-xs mt-3 opacity-70">Condividi il codice invito per aggiungere giocatori.</div>
+        <div className="text-xs mt-3 opacity-70">
+          Condividi il codice invito per aggiungere giocatori.
+        </div>
       </Card>
     </div>
   );
 }
+
 
 // -------------------- Manuals --------------------
 function ManualsView({ role, campaign, updateCampaign }) {
