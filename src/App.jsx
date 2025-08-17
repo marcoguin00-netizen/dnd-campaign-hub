@@ -63,12 +63,19 @@ const uid = () => Math.random().toString(36).slice(2, 10);
 const genCode = () =>
   Array.from({ length: 6 }, () =>
     "ABCDEFGHJKLMNPQRSTUVWXYZ23456789"[Math.floor(Math.random() * 32)]
-  ).join("");
+  ).join();
 
+// --- Sanifica il localStorage: rimuovi elementi falsy in campaigns
 const loadData = () => {
   try {
     const raw = localStorage.getItem("dndhub_data_v1");
-    if (raw) return JSON.parse(raw);
+    if (raw) {
+      const d = JSON.parse(raw);
+      return {
+        campaigns: Array.isArray(d?.campaigns) ? d.campaigns.filter(Boolean) : [],
+        lastCampaignId: d?.lastCampaignId ?? null,
+      };
+    }
   } catch {}
   return { campaigns: [], lastCampaignId: null };
 };
@@ -140,10 +147,13 @@ export default function App() {
   const [role, setRole] = useState("DM");
   const [playerName, setPlayerName] = useState("");
   const [view, setView] = useState("entry");
+
+  // --- usa ?. per evitare crash se un elemento di campaigns è undefined
   const activeCampaign = useMemo(
-    () => data.campaigns.find((c) => c.id === data.lastCampaignId) || null,
+    () => data.campaigns.find((c) => c?.id === data.lastCampaignId) || null,
     [data]
   );
+
   const [joinRequest, setJoinRequest] = useState(null); // {code, name}
   const rtRef = useRef(null);
 
@@ -160,7 +170,7 @@ export default function App() {
       if (msg.type === "snapshot") {
         const incoming = msg.payload;
         setData((d) => {
-          const existing = d.campaigns.find((c) => c.code === incoming.code);
+          const existing = d.campaigns.find((c) => c?.code === incoming.code);
           if (!existing) {
             return {
               ...d,
@@ -171,7 +181,7 @@ export default function App() {
           if ((existing.version || 0) >= (incoming.version || 0)) return d;
           return {
             ...d,
-            campaigns: d.campaigns.map((c) => (c.code === incoming.code ? incoming : c)),
+            campaigns: d.campaigns.map((c) => (c && c.code === incoming.code ? incoming : c)),
           };
         });
         if (joinRequest && joinRequest.code === incoming.code) {
@@ -241,7 +251,7 @@ export default function App() {
   };
 
   const joinCampaign = ({ code, name }) => {
-    const c = data.campaigns.find((x) => x.code === code.trim().toUpperCase());
+    const c = data.campaigns.find((x) => x?.code === code.trim().toUpperCase());
     if (c) {
       setPlayerName(name.trim());
       setRole("Player");
@@ -262,7 +272,7 @@ export default function App() {
     setData((d) => {
       let updated = null;
       const campaigns = d.campaigns.map((c) => {
-        if (c.id === activeCampaign.id) {
+        if (c && c.id === activeCampaign.id) {
           updated = { ...c, ...patch, version: (c.version || 0) + 1 };
           return updated;
         }
@@ -279,7 +289,7 @@ export default function App() {
     setData((d) => {
       let updated = null;
       const campaigns = d.campaigns.map((c) => {
-        if (c.id === activeCampaign.id) {
+        if (c && c.id === activeCampaign.id) {
           const next = fn(c);
           updated = { ...next, version: (c.version || 0) + 1 };
           return updated;
@@ -430,7 +440,7 @@ function EntryView({ campaigns, setCampaign, onCreate, onJoin }) {
           <p className="text-sm opacity-70">Nessuna campagna salvata in questo browser.</p>
         ) : (
           <div className="space-y-2">
-            {campaigns.map((c) => (
+            {campaigns.filter(Boolean).map((c) => (
               <div key={c.id} className="flex items-center justify-between bg-white rounded-xl p-3 border">
                 <div>
                   <div className="font-medium">{c.name}</div>
