@@ -1,90 +1,118 @@
+// server.js
 import { WebSocketServer } from 'ws';
-import fs from 'fs';
-import path from 'path';
+import { MongoClient } from 'mongodb';
 
-const PORT = process.env.PORT || 3001;
-const wss = new WebSocketServer({ port: PORT });
+const PORT = process.env.PORT || 10000;
 
-// === Configurazione cartella dati ===
-const DATA_DIR = process.env.DATA_DIR || "D:\\dnd-hub-data";
-if (!fs.existsSync(DATA_DIR)) fs.mkdirSync(DATA_DIR, { recursive: true });
+// ------- MongoDB config -------
+const MONGODB_URI = process.env.MONGODB_URI;
+const DB_NAME = process.env.MONGODB_DB || 'dndhub';
+const COLLECTION_NAME = process.env.MONGODB_COLLECTION || 'rooms';
 
-// Funzioni di supporto per salvataggio su disco
-const fileForRoom = (room) => path.join(DATA_DIR, `campaign_${room}.json`);
+if (!MONGODB_URI) {
+  console.error('❌ Manca MONGODB_URI (Render -> Environment).');
+  process.exit(1);
+}
 
-function readSnapshot(room) {
-  try {
-    const f = fileForRoom(room);
-    if (!fs.existsSync(f)) return null;
-    return JSON.parse(fs.readFileSync(f, 'utf8'));
-  } catch {
-    return null;
+async function start() {
+  // Connetti a MongoDB
+  const client = new MongoClient(MONGODB_URI, { serverSelectionTimeoutMS: 8000 });
+  await client.connect();
+  const collection = client.db(DB_NAME).collection(COLLECTION_NAME);
+  await collection.createIndex({ _id: 1 });
+  console.log('✅ Connesso a MongoDB');
+
+  // Avvia WebSocket
+  const wss = new WebSocketServer({ port: PORT });
+  console.log(`✅ WebSocket server in ascolto su ws://localhost:${PORT}`);
+
+  // roomId -> Set<WebSocket>
+  const rooms = new Map();
+
+  function joinRoom(ws, roomId) {
+    if (!rooms.has(roomId)) rooms.set(roomId, new Set());
+    rooms.get(roomId).add(ws);
+    ws._roomId = roomId;
   }
-}
 
-function writeSnapshot(room, snapshot) {
-  try {
-    fs.writeFileSync(fileForRoom(room), JSON.stringify(snapshot, null, 2), 'utf8');
-  } catch (e) {
-    console.error('Errore salvataggio:', e);
-  }
-}
-
-// === Gestione stanze ===
-const rooms = new Map();
-
-function joinRoom(ws, room) {
-  if (!rooms.has(room)) rooms.set(room, new Set());
-  rooms.get(room).add(ws);
-  ws._room = room;
-}
-
-function leaveRoom(ws) {
-  if (ws._room && rooms.has(ws._room)) {
-    rooms.get(ws._room).delete(ws);
-    if (rooms.get(ws._room).size === 0) rooms.delete(ws._room);
-  }
-  ws._room = null;
-}
-
-function broadcast(room, data, exclude) {
-  const peers = rooms.get(room) || new Set();
-  for (const client of peers) {
-    if (client === exclude) continue;
-    if (client.readyState === 1) client.send(JSON.stringify(data));
-  }
-}
-
-// === Eventi socket ===
-wss.on('connection', (ws) => {
-  ws.on('message', (raw) => {
-    let msg;
-    try { msg = JSON.parse(raw); } catch { return; }
-
-    if (msg.type === 'join') {
-      joinRoom(ws, msg.room);
-
-      // Se esiste uno snapshot salvato, lo invio al client
-      const snapshot = readSnapshot(msg.room);
-      if (snapshot) {
-        ws.send(JSON.stringify({ type: 'snapshot', room: msg.room, payload: snapshot }));
-      }
-      return;
+  function leaveRoom(ws) {
+    const roomId = ws._roomId;
+    if (!roomId) return;
+    const set = rooms.get(roomId);
+    if (set) {
+      set.delete(ws);
+      if (set.size === 0) rooms.delete(roomId);
     }
+    ws._roomId = null;
+  }
 
-    if (msg.type === 'broadcast') {
-      // Se il DM invia uno snapshot completo → salvalo su disco
-      if (msg.innerType === 'snapshot' && msg.room && msg.payload) {
-        writeSnapshot(msg.room, msg.payload);
+  function broadcast(roomId, data, exclude) {
+    const peers = rooms.get(roomId);
+    if (!peers) return;
+    for (const peer of peers) {
+      if (peer === exclude) continue;
+      if (peer.readyState === 1) peer.send(JSON.stringify(data));
+    }
+  }
+
+  wss.on('connection', (ws) => {
+    ws.on('message', async (raw) => {
+      let msg;
+      try {
+        msg = JSON.parse(raw);
+      } catch {
+        return;
       }
 
-      // Invia il messaggio a tutti gli altri
-      broadcast(msg.room, { type: msg.innerType, room: msg.room, payload: msg.payload }, ws);
-      return;
-    }
+      // { type: 'join', room }
+      if (msg.type === 'join' && msg.room) {
+        joinRoom(ws, msg.room);
+        // invia lo stato salvato, se esiste
+        const doc = await collection.findOne({ _id: msg.room });
+        ws.send(JSON.stringify({ type: 'restore', payload: doc?.state ?? null }));
+        return;
+      }
+
+      // { type: 'broadcast', room, innerType, payload }
+      if (msg.type === 'broadcast' && msg.room) {
+        broadcast(
+          msg.room,
+          { type: msg.innerType, payload: msg.payload },
+          ws
+        );
+        return;
+      }
+
+      // { type: 'save', room, payload: <stato intero> }
+      if (msg.type === 'save' && msg.room) {
+        await collection.updateOne(
+          { _id: msg.room },
+          { $set: { state: msg.payload, updatedAt: new Date() } },
+          { upsert: true }
+        );
+        return;
+      }
+
+      // { type: 'restore', room }
+      if (msg.type === 'restore' && msg.room) {
+        const doc = await collection.findOne({ _id: msg.room });
+        ws.send(JSON.stringify({ type: 'restore', payload: doc?.state ?? null }));
+        return;
+      }
+    });
+
+    ws.on('close', () => {
+      leaveRoom(ws);
+    });
   });
 
-  ws.on('close', () => leaveRoom(ws));
-});
+  process.on('SIGINT', async () => {
+    try { await client.close(); } catch {}
+    process.exit(0);
+  });
+}
 
-console.log(`WebSocket server running on ws://localhost:${PORT}`);
+start().catch((err) => {
+  console.error('Errore all’avvio:', err);
+  process.exit(1);
+});
