@@ -242,39 +242,79 @@ const createCampaign = async ({ name, imageFile }) => {
   };
 
   return (
-    <div className="min-h-screen bg-gradient-to-br from-sky-50 to-indigo-100 text-slate-800">
-      <div className="max-w-6xl mx-auto px-4 py-6">
-        <Header role={role} setRole={setRole} activeCampaign={activeCampaign} setView={setView} onReset={resetAll} />
-        {view === "entry" && (
-          <EntryView
-            campaigns={data.campaigns}
-            setCampaign={(id) => { setCampaign(id); setView("home"); }}
-            onCreate={createCampaign}
-            onJoin={joinCampaign}
-          />
-        )}
-        {activeCampaign && view !== "entry" && (
-          <>
-            <NavTabs view={view} setView={setView} />
-            {view === "home" && (
-  <HomeView
-    role={role}
-    campaign={activeCampaign}
-    onReplaceImage={(url) => upsertCampaign({ imageUrl: url })}
-  />
-)}
+  <div className="min-h-screen bg-gradient-to-br from-sky-50 to-indigo-100 text-slate-800">
+    <div className="max-w-6xl mx-auto px-4 py-6">
+      <Header
+        role={role}
+        setRole={setRole}
+        activeCampaign={activeCampaign}
+        setView={setView}
+        onReset={resetAll}
+      />
 
-            {view === "manuals" && <ManualsView role={role} campaign={activeCampaign} updateCampaign={updateCampaign} />}
-            {view === "pg" && <PGView role={role} campaign={activeCampaign} playerName={playerName} updateCampaign={updateCampaign} />}
-            {view === "session" && <SessionView role={role} campaign={activeCampaign} updateCampaign={updateCampaign} />}
-            {view === "gallery" && <GalleryView role={role} campaign={activeCampaign} updateCampaign={updateCampaign} />}
-          </>
-        )}
-      </div>
+      {view === "entry" && (
+        <EntryView
+          campaigns={data.campaigns}
+          setCampaign={(id) => {
+            setCampaign(id);
+            setView("home");
+          }}
+          onCreate={createCampaign}
+          onJoin={joinCampaign}
+        />
+      )}
+
+      {activeCampaign && view !== "entry" && (
+        <>
+          <NavTabs view={view} setView={setView} />
+
+          {view === "home" && (
+            <HomeView
+              role={role}
+              campaign={activeCampaign}
+              // ora onReplaceImage riceve direttamente la URL già caricata su Cloudinary
+              onReplaceImage={(url) => upsertCampaign({ imageUrl: url })}
+            />
+          )}
+
+          {view === "manuals" && (
+            <ManualsView
+              role={role}
+              campaign={activeCampaign}
+              updateCampaign={updateCampaign}
+            />
+          )}
+
+          {view === "pg" && (
+            <PGView
+              role={role}
+              campaign={activeCampaign}
+              playerName={playerName}
+              updateCampaign={updateCampaign}
+            />
+          )}
+
+          {view === "session" && (
+            <SessionView
+              role={role}
+              campaign={activeCampaign}
+              updateCampaign={updateCampaign}
+            />
+          )}
+
+          {view === "gallery" && (
+            <GalleryView
+              role={role}
+              campaign={activeCampaign}
+              updateCampaign={updateCampaign}
+            />
+          )}
+        </>
+      )}
     </div>
-  );
+  </div>
+);
 }
-
 // -------------------- Header + Tabs --------------------
 function Header({ role, setRole, activeCampaign, setView, onReset }) {
   return (
